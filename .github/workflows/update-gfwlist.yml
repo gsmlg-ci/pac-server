@@ -1,0 +1,41 @@
+name: update-gfwlist
+
+on:
+  schedule:
+    # Weekly on Sunday 00:00 UTC
+    - cron: "0 0 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Update gfwlist.pac
+        run: |
+          set -euo pipefail
+          make update-gfwlist
+
+      - name: Commit and push if changed
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- gfwlist.pac; then
+            echo "No changes."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add gfwlist.pac
+          git commit -m "chore: weekly update gfwlist.pac"
+          git push
+

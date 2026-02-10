@@ -30,14 +30,27 @@ docker run -d -p 1080:1080 gsmlg/pac-server:latest -s "SOCKS5 127.0.0.1:1080" -h
 |------|---------|-------------|
 | `-h` | `:1080` | Listen address |
 | `-s` | `PROXY 127.0.0.1:3128` | Proxy server address |
-| `-p` | `false` | Print hosts in gfwlist.pac and exit |
+| `-pac` | *(empty)* | Serve PAC from a file path (defaults to embedded `gfwlist.pac`) |
+| `-custom` | *(empty)* | Inject a custom PAC snippet at `/*__CUSTOM_PAC__*/` |
+| `-p` | `false` | Print domains found in the served PAC and exit |
 
 ## Build
 
 ```bash
-# Download latest gfwlist.pac and build binary
-make download && make build
+# Update gfwlist.pac from gfwlist.txt and build binary
+make update-gfwlist && make build
 
 # Build Docker image
 docker build -t gsmlg/pac-server .
+```
+
+### Custom PAC Snippet
+
+You can inject a custom PAC snippet at runtime. The file contents are inserted into the generated `FindProxyForURL` function at the placeholder `/*__CUSTOM_PAC__*/`.
+
+```bash
+docker run -d -p 1080:1080 \
+  -v "$PWD/custom.pac.snippet.js:/custom.pac.snippet.js:ro" \
+  gsmlg/pac-server:latest \
+  -custom /custom.pac.snippet.js
 ```

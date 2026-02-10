@@ -6,7 +6,10 @@ on:
     paths:
       - 'Dockerfile'
       - 'main.go'
+      - 'cmd/**'
       - 'go.mod'
+      - 'internal/**'
+      - 'gfwlist.pac'
       - 'Makefile'
       - '.github/workflows/build.yml'
   workflow_dispatch:

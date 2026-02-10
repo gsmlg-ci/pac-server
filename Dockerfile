@@ -6,8 +6,8 @@ COPY ./ /app
 
 WORKDIR /app
 
-RUN apk add --no-cache --update make curl \
-    && make download && make build
+RUN apk add --no-cache --update make \
+    && make build
 
 FROM alpine:latest
 
@@ -25,4 +25,3 @@ COPY --from=builder /app/pac-server /bin/pac-server
 
 CMD ["-s", "PROXY 127.0.0.1:3128", "-h", ":1080"]
 ENTRYPOINT ["/bin/pac-server"]
-
