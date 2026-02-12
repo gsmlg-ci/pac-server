@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -8,76 +9,66 @@ import (
 	"os"
 	"time"
 
-	"github.com/gsmlg-ci/pac-server/internal/gfwlist"
-	"github.com/gsmlg-ci/pac-server/internal/pac"
+	"github.com/gsmlg-ci/pac-server/internal/pacgen"
 )
 
-func main() {
-	var (
-		inPath  string
-		outPath string
-		urlStr  string
-		timeout time.Duration
-	)
+const defaultGFWListURL = "https://raw.githubusercontent.com/gfwlist/gfwlist/refs/heads/master/gfwlist.txt"
 
-	flag.StringVar(&urlStr, "url", "https://github.com/gfwlist/gfwlist/raw/refs/heads/master/gfwlist.txt", "GFWList base64 URL")
-	flag.StringVar(&inPath, "in", "", "Read gfwlist base64 from a local file instead of -url")
-	flag.StringVar(&outPath, "out", "gfwlist.pac", "Write PAC output path")
-	flag.DurationVar(&timeout, "timeout", 30*time.Second, "HTTP request timeout")
+func main() {
+	urlFlag := flag.String("url", defaultGFWListURL, "gfwlist source URL")
+	inFlag := flag.String("in", "", "optional local gfwlist.txt path (base64 encoded); use '-' for stdin")
+	outFlag := flag.String("out", "gfwlist.pac", "output PAC file path")
+	proxyFlag := flag.String("s", pacgen.DefaultProxy, "proxy server value in PAC")
 	flag.Parse()
 
-	var raw []byte
-	var err error
-
-	if inPath != "" {
-		raw, err = os.ReadFile(inPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "read -in: %v\n", err)
-			os.Exit(2)
-		}
-	} else {
-		c := &http.Client{Timeout: timeout}
-		req, err := http.NewRequest("GET", urlStr, nil)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "new request: %v\n", err)
-			os.Exit(2)
-		}
-		req.Header.Set("User-Agent", "pac-server gfwlist2pac")
-		resp, err := c.Do(req)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "fetch -url: %v\n", err)
-			os.Exit(2)
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode/100 != 2 {
-			fmt.Fprintf(os.Stderr, "fetch -url: unexpected status %s\n", resp.Status)
-			os.Exit(2)
-		}
-		raw, err = io.ReadAll(resp.Body)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "read response: %v\n", err)
-			os.Exit(2)
-		}
-	}
-
-	decoded, err := gfwlist.DecodeBase64(raw)
+	data, err := readInput(*inFlag, *urlFlag)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "decode gfwlist: %v\n", err)
-		os.Exit(2)
+		fail(err)
 	}
 
-	proxyDomains, directDomains := gfwlist.ExtractDomains(decoded)
-	pacBytes, err := pac.RenderPAC(pac.Lists{
-		ProxyDomains:  proxyDomains,
-		DirectDomains: directDomains,
-	})
+	raw, err := pacgen.DecodeMaybeBase64(data)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "render pac: %v\n", err)
-		os.Exit(2)
+		fail(fmt.Errorf("decode gfwlist: %w", err))
 	}
 
-	if err := os.WriteFile(outPath, pacBytes, 0644); err != nil {
-		fmt.Fprintf(os.Stderr, "write -out: %v\n", err)
-		os.Exit(2)
+	domains := pacgen.ParseDomains(string(raw))
+	if len(domains) == 0 {
+		fail(errors.New("no domains parsed from gfwlist"))
 	}
+
+	pac := pacgen.GeneratePAC(domains, *proxyFlag)
+	if err := os.WriteFile(*outFlag, []byte(pac), 0o644); err != nil {
+		fail(fmt.Errorf("write PAC file: %w", err))
+	}
+}
+
+func fail(err error) {
+	fmt.Fprintf(os.Stderr, "error: %v\n", err)
+	os.Exit(1)
+}
+
+func readInput(inPath, url string) ([]byte, error) {
+	switch inPath {
+	case "":
+		return download(url)
+	case "-":
+		return io.ReadAll(os.Stdin)
+	default:
+		return os.ReadFile(inPath)
+	}
+}
+
+func download(url string) ([]byte, error) {
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("download %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("download %s: unexpected status %s", url, resp.Status)
+	}
+
+	return io.ReadAll(resp.Body)
 }

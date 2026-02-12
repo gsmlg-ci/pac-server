@@ -2,8 +2,7 @@ name: update-gfwlist
 
 on:
   schedule:
-    # Weekly on Sunday 00:00 UTC
-    - cron: "0 0 * * 0"
+    - cron: '0 3 * * 1'
   workflow_dispatch:
 
 permissions:
@@ -15,27 +14,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-
-      - name: Update gfwlist.pac
+      - name: Download gfwlist.txt
+        run: curl -fsSL https://raw.githubusercontent.com/gfwlist/gfwlist/refs/heads/master/gfwlist.txt -o gfwlist.txt
+      - name: Commit and push when changed
         run: |
-          set -euo pipefail
-          make update-gfwlist
-
-      - name: Commit and push if changed
-        run: |
-          set -euo pipefail
-          if git diff --quiet -- gfwlist.pac; then
-            echo "No changes."
+          if git diff --quiet -- gfwlist.txt; then
+            echo "No changes in gfwlist.txt"
             exit 0
           fi
           git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add gfwlist.pac
-          git commit -m "chore: weekly update gfwlist.pac"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add gfwlist.txt
+          git commit -m "chore: update gfwlist.txt"
           git push
-

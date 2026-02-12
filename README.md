@@ -2,7 +2,7 @@
 
 [![Build](https://github.com/gsmlg-ci/pac-server/actions/workflows/build.yml/badge.svg)](https://github.com/gsmlg-ci/pac-server/actions/workflows/build.yml)
 
-A simple PAC (Proxy Auto-Configuration) server written in Go. Serves a GFW list PAC file with configurable proxy settings.
+A simple PAC (Proxy Auto-Configuration) server written in Go. It embeds `gfwlist.txt` into the binary and generates PAC content at runtime, with optional overrides from external `gfwlist.txt` and `custom.txt`.
 
 Docker image published to:
 - `docker.io/gsmlg/pac-server`
@@ -22,6 +22,9 @@ docker run -d -p 1080:1080 gsmlg/pac-server:latest
 
 # Run with custom proxy
 docker run -d -p 1080:1080 gsmlg/pac-server:latest -s "SOCKS5 127.0.0.1:1080" -h ":1080"
+
+# Run with custom list merged into gfwlist
+docker run -d -p 1080:1080 -v $(pwd)/custom.txt:/data/custom.txt:ro gsmlg/pac-server:latest -c /data/custom.txt
 ```
 
 ### CLI Flags
@@ -30,27 +33,28 @@ docker run -d -p 1080:1080 gsmlg/pac-server:latest -s "SOCKS5 127.0.0.1:1080" -h
 |------|---------|-------------|
 | `-h` | `:1080` | Listen address |
 | `-s` | `PROXY 127.0.0.1:3128` | Proxy server address |
-| `-pac` | *(empty)* | Serve PAC from a file path (defaults to embedded `gfwlist.pac`) |
-| `-custom` | *(empty)* | Inject a custom PAC snippet at `/*__CUSTOM_PAC__*/` |
-| `-p` | `false` | Print domains found in the served PAC and exit |
+| `-g` | `gfwlist.txt` | Path to gfwlist source file (base64 or plain text). Falls back to embedded list when default file is missing |
+| `-c` | `` | Optional path to custom domain list file |
+| `-p` | `false` | Print parsed hosts and exit |
 
 ## Build
 
 ```bash
-# Update gfwlist.pac from gfwlist.txt and build binary
-make update-gfwlist && make build
+# Download latest gfwlist.txt and build binary
+make download && make build
 
 # Build Docker image
 docker build -t gsmlg/pac-server .
 ```
 
-### Custom PAC Snippet
+## Release Artifacts
 
-You can inject a custom PAC snippet at runtime. The file contents are inserted into the generated `FindProxyForURL` function at the placeholder `/*__CUSTOM_PAC__*/`.
-
-```bash
-docker run -d -p 1080:1080 \
-  -v "$PWD/custom.pac.snippet.js:/custom.pac.snippet.js:ro" \
-  gsmlg/pac-server:latest \
-  -custom /custom.pac.snippet.js
-```
+Tagging `v*` (for example `v1.2.3`) triggers release automation that:
+- builds and uploads binaries for:
+  - linux amd64/arm64
+  - macOS amd64/arm64
+  - windows amd64/arm64
+  - freebsd amd64/arm64
+- publishes multi-arch Docker images (`linux/amd64`, `linux/arm64`) to:
+  - `docker.io/gsmlg/pac-server:<tag>` and `:latest`
+  - `ghcr.io/gsmlg-dev/pac-server:<tag>` and `:latest`

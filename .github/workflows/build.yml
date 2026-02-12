@@ -6,12 +6,15 @@ on:
     paths:
       - 'Dockerfile'
       - 'main.go'
-      - 'cmd/**'
-      - 'go.mod'
       - 'internal/**'
-      - 'gfwlist.pac'
+      - 'cmd/**'
+      - 'gfwlist.txt'
+      - 'go.mod'
+      - 'go.sum'
       - 'Makefile'
       - '.github/workflows/build.yml'
+      - '.github/workflows/release.yml'
+      - '.github/workflows/update-gfwlist.yml'
   workflow_dispatch:
 
 jobs:
