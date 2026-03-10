@@ -21,6 +21,8 @@ LABEL org.opencontainers.image.authors="Jonathan Gao <gsmlg.com@gmail.com>"
 LABEL org.opencontainers.image.description="A simple PAC (Proxy Auto-Configuration) server"
 LABEL org.opencontainers.image.licenses=MIT
 
+LABEL org.opencontainers.image.source="https://github.com/gsmlg-ci/pac-server"
+
 COPY --from=builder /app/pac-server /bin/pac-server
 
 CMD ["-s", "PROXY 127.0.0.1:3128", "-h", ":1080"]
