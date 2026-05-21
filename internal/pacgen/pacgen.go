@@ -74,24 +74,51 @@ func MergeDomainLists(lists ...[]string) []string {
 	return SortedDomains(set)
 }
 
-func GeneratePAC(domains []string, proxy string) string {
+// GeneratePAC generates a PAC JS with two domain sets:
+//   - customDomains: checked first (higher priority)
+//   - gfwlistDomains: checked second (fallback)
+//
+// If customDomains is empty, the generated code only checks gfwlistDomains.
+func GeneratePAC(customDomains, gfwlistDomains []string, proxy string) string {
 	if proxy == "" {
 		proxy = DefaultProxy
 	}
 
 	var b strings.Builder
-	b.Grow(1024 + len(domains)*24)
+	// Pre-allocate: proxy string + fixed JS boilerplate ~150 bytes,
+	// plus ~18 bytes per domain per array.
+	total := 150 + len(customDomains)*18 + len(gfwlistDomains)*18
+	b.Grow(total)
 
 	b.WriteString("var proxy = '")
 	b.WriteString(proxy)
 	b.WriteString("';\n")
+
+	if len(customDomains) > 0 {
+		b.WriteString("var customHosts = [\n")
+		for _, d := range customDomains {
+			fmt.Fprintf(&b, "            %q,\n", d)
+		}
+		b.WriteString("];\n")
+	}
+
 	b.WriteString("var hosts = [\n")
-	for _, d := range domains {
+	for _, d := range gfwlistDomains {
 		fmt.Fprintf(&b, "            %q,\n", d)
 	}
 	b.WriteString("];\n\n")
 	b.WriteString("function FindProxyForURL(url, host) {\n")
 	b.WriteString("    var h = host.toLowerCase();\n")
+
+	if len(customDomains) > 0 {
+		b.WriteString("    for (var i = 0; i < customHosts.length; i++) {\n")
+		b.WriteString("        var d = customHosts[i];\n")
+		b.WriteString("        if (h === d || h.endsWith('.' + d)) {\n")
+		b.WriteString("            return proxy;\n")
+		b.WriteString("        }\n")
+		b.WriteString("    }\n")
+	}
+
 	b.WriteString("    for (var i = 0; i < hosts.length; i++) {\n")
 	b.WriteString("        var d = hosts[i];\n")
 	b.WriteString("        if (h === d || h.endsWith('.' + d)) {\n")

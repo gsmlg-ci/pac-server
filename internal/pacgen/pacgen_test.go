@@ -53,7 +53,7 @@ func TestMergeDomainLists(t *testing.T) {
 }
 
 func TestGeneratePAC(t *testing.T) {
-	pac := GeneratePAC([]string{"example.com"}, "PROXY 127.0.0.1:3128")
+	pac := GeneratePAC(nil, []string{"example.com"}, "PROXY 127.0.0.1:3128")
 
 	checks := []string{
 		"var proxy = 'PROXY 127.0.0.1:3128';",
@@ -66,5 +66,32 @@ func TestGeneratePAC(t *testing.T) {
 		if !strings.Contains(pac, c) {
 			t.Fatalf("generated PAC missing expected content: %q", c)
 		}
+	}
+}
+
+func TestGeneratePACWithCustom(t *testing.T) {
+	custom := []string{"custom.example.com"}
+	gfwlist := []string{"gfwlist.example.com"}
+
+	pac := GeneratePAC(custom, gfwlist, "PROXY 127.0.0.1:3128")
+
+	checks := []string{
+		"var customHosts = [",
+		"\"custom.example.com\",",
+		"\"gfwlist.example.com\",",
+		"customHosts.length",
+	}
+
+	for _, c := range checks {
+		if !strings.Contains(pac, c) {
+			t.Fatalf("generated PAC missing expected content: %q", c)
+		}
+	}
+
+	// Custom domains should appear before gfwlist domains in the file.
+	customIdx := strings.Index(pac, "customHosts")
+	gfwlistIdx := strings.Index(pac, "var hosts")
+	if customIdx > gfwlistIdx {
+		t.Fatal("customHosts should appear before hosts in generated PAC")
 	}
 }

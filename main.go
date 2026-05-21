@@ -20,10 +20,12 @@ var (
 	proxyServer string
 	printHosts  bool
 	gfwlistPath string
+	domainsPath string
 	customPath  string
 )
 
 const defaultGFWListPath = "gfwlist.txt"
+const defaultDomainsPath = "domains.txt"
 
 //go:embed gfwlist.txt
 var embeddedGFWList []byte
@@ -33,16 +35,22 @@ func init() {
 	flag.StringVar(&proxyServer, "s", "PROXY 127.0.0.1:3128", "Set proxy server address, default is 'PROXY 127.0.0.1:3128'.")
 	flag.BoolVar(&printHosts, "p", false, "Print parsed hosts and exit.")
 	flag.StringVar(&gfwlistPath, "g", defaultGFWListPath, "Path to gfwlist.txt (base64 or plain text). If missing and default path is used, embedded gfwlist is used.")
-	flag.StringVar(&customPath, "c", "", "Optional path to custom list file.")
+	flag.StringVar(&domainsPath, "d", defaultDomainsPath, "Path to extra domains file (one domain per line). Skipped if file does not exist.")
+	flag.StringVar(&customPath, "c", "", "Optional path to custom list file (deprecated, use -d instead).")
 }
 
 type pacService struct {
-	proxy      string
-	gfwlist    string
-	custom     string
-	mu         sync.RWMutex
-	cachedKey  string
-	cachedBody []byte
+	proxy   string
+	gfwlist string
+	domains string
+	custom  string
+	mu      sync.RWMutex
+	cached  *cachedPAC
+}
+
+type cachedPAC struct {
+	key  string
+	body []byte
 }
 
 func (s *pacService) loadPAC() ([]byte, error) {
@@ -52,63 +60,85 @@ func (s *pacService) loadPAC() ([]byte, error) {
 	}
 
 	s.mu.RLock()
-	if s.cachedKey == key && len(s.cachedBody) > 0 {
-		body := append([]byte(nil), s.cachedBody...)
+	if s.cached != nil && s.cached.key == key {
+		body := append([]byte(nil), s.cached.body...)
 		s.mu.RUnlock()
 		return body, nil
 	}
 	s.mu.RUnlock()
 
-	domains, err := s.loadDomains()
+	customDomains, err := s.loadDomainsFile(s.domains)
 	if err != nil {
 		return nil, err
 	}
-	if len(domains) == 0 {
-		return nil, errors.New("no domains parsed from lists")
+	gfwDomains, err := s.loadDomains()
+	if err != nil {
+		return nil, err
 	}
 
-	pac := []byte(pacgen.GeneratePAC(domains, s.proxy))
+	var allCustom []string
+	if len(customDomains) > 0 {
+		allCustom = customDomains
+	} else if s.custom != "" {
+		allCustom, err = parseDomainsFromFile(s.custom, false)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	pac := []byte(pacgen.GeneratePAC(allCustom, gfwDomains, s.proxy))
 
 	s.mu.Lock()
-	s.cachedKey = key
-	s.cachedBody = append([]byte(nil), pac...)
+	if s.cached == nil {
+		s.cached = &cachedPAC{}
+	}
+	s.cached.key = key
+	s.cached.body = append([]byte(nil), pac...)
 	s.mu.Unlock()
 
 	return pac, nil
 }
 
 func (s *pacService) loadDomains() ([]string, error) {
-	gfwDomains, err := parseDomainsFromFile(s.gfwlist, true)
-	if err != nil {
-		return nil, err
-	}
-	if s.custom == "" {
-		return gfwDomains, nil
-	}
+	return parseDomainsFromFile(s.gfwlist, true)
+}
 
-	customDomains, err := parseDomainsFromFile(s.custom, false)
+func (s *pacService) loadDomainsFile(path string) ([]string, error) {
+	content, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
-
-	return pacgen.MergeDomainLists(gfwDomains, customDomains), nil
+	return pacgen.ParseDomains(string(content)), nil
 }
 
 func (s *pacService) cacheKey() (string, error) {
-	key, err := sourceCacheKey(s.gfwlist, true)
+	gfwKey, err := sourceCacheKey(s.gfwlist, true)
 	if err != nil {
 		return "", err
 	}
-	if s.custom == "" {
-		return key, nil
+
+	domainsKey, err := sourceCacheKey(s.domains, false)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			domainsKey = ""
+		} else {
+			return "", err
+		}
 	}
 
 	customKey, err := sourceCacheKey(s.custom, false)
 	if err != nil {
-		return "", err
+		if errors.Is(err, os.ErrNotExist) {
+			customKey = ""
+		} else {
+			return "", err
+		}
 	}
 
-	return fmt.Sprintf("%s|%s", key, customKey), nil
+	return fmt.Sprintf("%s|%s|%s", gfwKey, domainsKey, customKey), nil
 }
 
 func sourceCacheKey(path string, allowEmbeddedFallback bool) (string, error) {
@@ -117,7 +147,7 @@ func sourceCacheKey(path string, allowEmbeddedFallback bool) (string, error) {
 		if allowEmbeddedFallback && errors.Is(err, os.ErrNotExist) && path == defaultGFWListPath {
 			return fmt.Sprintf("g:embedded:%d", len(embeddedGFWList)), nil
 		}
-		return "", fmt.Errorf("stat %s: %w", path, err)
+		return "", err
 	}
 
 	return fmt.Sprintf("f:%s:%d:%d", path, stat.ModTime().UnixNano(), stat.Size()), nil
@@ -142,12 +172,37 @@ func parseDomainsFromFile(path string, allowEmbeddedFallback bool) ([]string, er
 }
 
 func (s *pacService) showHosts() error {
-	domains, err := s.loadDomains()
-	if err != nil {
+	var domains []string
+
+	if customDomains, err := s.loadDomainsFile(s.domains); err != nil {
 		return err
+	} else if len(customDomains) > 0 {
+		domains = append(domains, customDomains...)
 	}
-	sort.Strings(domains)
-	for _, h := range domains {
+
+	if customDomains, err := parseDomainsFromFile(s.custom, false); err != nil {
+		return err
+	} else if len(customDomains) > 0 {
+		domains = append(domains, customDomains...)
+	}
+
+	if gfwDomains, err := s.loadDomains(); err != nil {
+		return err
+	} else {
+		domains = append(domains, gfwDomains...)
+	}
+
+	seen := make(map[string]bool)
+	var unique []string
+	for _, d := range domains {
+		if !seen[d] {
+			seen[d] = true
+			unique = append(unique, d)
+		}
+	}
+
+	sort.Strings(unique)
+	for _, h := range unique {
 		fmt.Println(h)
 	}
 	return nil
@@ -167,12 +222,48 @@ func (s *pacService) handler(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(pac)
 }
 
+func (s *pacService) watchDomains(done <-chan struct{}) {
+	prevModTime := int64(-1)
+	if st, err := os.Stat(s.domains); err == nil {
+		prevModTime = st.ModTime().UnixNano()
+	}
+
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			st, err := os.Stat(s.domains)
+			if err != nil {
+				continue
+			}
+			modTime := st.ModTime().UnixNano()
+			if modTime != prevModTime {
+				prevModTime = modTime
+				s.mu.Lock()
+				s.cached = nil
+				s.mu.Unlock()
+				log.Printf("domains.txt changed, cache invalidated")
+			}
+		}
+	}
+}
+
 func main() {
 	flag.Parse()
+
+	domainsExist := true
+	if _, err := os.Stat(domainsPath); err != nil && errors.Is(err, os.ErrNotExist) {
+		domainsExist = false
+	}
 
 	service := &pacService{
 		proxy:   proxyServer,
 		gfwlist: gfwlistPath,
+		domains: domainsPath,
 		custom:  customPath,
 	}
 
@@ -191,10 +282,20 @@ func main() {
 		MaxHeaderBytes: 1 << 20,
 	}
 
+	done := make(chan struct{})
+	defer close(done)
+
+	go service.watchDomains(done)
+
 	log.Printf("PAC server start at %s", host)
 	log.Printf("gfwlist source: %s", gfwlistPath)
 	if _, err := os.Stat(gfwlistPath); err != nil && errors.Is(err, os.ErrNotExist) && gfwlistPath == defaultGFWListPath {
 		log.Printf("gfwlist source file not found, using embedded gfwlist")
+	}
+	if domainsExist {
+		log.Printf("domains source: %s (auto-reload enabled)", domainsPath)
+	} else {
+		log.Printf("domains source: %s (file not found, skipped)", domainsPath)
 	}
 	if customPath != "" {
 		log.Printf("custom source: %s", customPath)
