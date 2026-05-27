@@ -1,0 +1,10 @@
+# Custom domain rules for PAC server
+# One domain per line. Lines starting with # are comments.
+# These domains are checked BEFORE gfwlist and take precedence.
+#
+# Examples:
+google.com
+youtube.com
+twitter.com
+facebook.com
+github.com

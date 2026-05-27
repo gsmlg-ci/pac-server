@@ -21,7 +21,6 @@ var (
 	printHosts  bool
 	gfwlistPath string
 	domainsPath string
-	customPath  string
 )
 
 const defaultGFWListPath = "gfwlist.txt"
@@ -36,14 +35,12 @@ func init() {
 	flag.BoolVar(&printHosts, "p", false, "Print parsed hosts and exit.")
 	flag.StringVar(&gfwlistPath, "g", defaultGFWListPath, "Path to gfwlist.txt (base64 or plain text). If missing and default path is used, embedded gfwlist is used.")
 	flag.StringVar(&domainsPath, "d", defaultDomainsPath, "Path to extra domains file (one domain per line). Skipped if file does not exist.")
-	flag.StringVar(&customPath, "c", "", "Optional path to custom list file (deprecated, use -d instead).")
 }
 
 type pacService struct {
 	proxy   string
 	gfwlist string
 	domains string
-	custom  string
 	mu      sync.RWMutex
 	cached  *cachedPAC
 }
@@ -76,17 +73,7 @@ func (s *pacService) loadPAC() ([]byte, error) {
 		return nil, err
 	}
 
-	var allCustom []string
-	if len(customDomains) > 0 {
-		allCustom = customDomains
-	} else if s.custom != "" {
-		allCustom, err = parseDomainsFromFile(s.custom, false)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	pac := []byte(pacgen.GeneratePAC(allCustom, gfwDomains, s.proxy))
+	pac := []byte(pacgen.GeneratePAC(customDomains, gfwDomains, s.proxy))
 
 	s.mu.Lock()
 	if s.cached == nil {
@@ -129,16 +116,7 @@ func (s *pacService) cacheKey() (string, error) {
 		}
 	}
 
-	customKey, err := sourceCacheKey(s.custom, false)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			customKey = ""
-		} else {
-			return "", err
-		}
-	}
-
-	return fmt.Sprintf("%s|%s|%s", gfwKey, domainsKey, customKey), nil
+	return fmt.Sprintf("%s|%s", gfwKey, domainsKey), nil
 }
 
 func sourceCacheKey(path string, allowEmbeddedFallback bool) (string, error) {
@@ -175,12 +153,6 @@ func (s *pacService) showHosts() error {
 	var domains []string
 
 	if customDomains, err := s.loadDomainsFile(s.domains); err != nil {
-		return err
-	} else if len(customDomains) > 0 {
-		domains = append(domains, customDomains...)
-	}
-
-	if customDomains, err := parseDomainsFromFile(s.custom, false); err != nil {
 		return err
 	} else if len(customDomains) > 0 {
 		domains = append(domains, customDomains...)
@@ -264,7 +236,6 @@ func main() {
 		proxy:   proxyServer,
 		gfwlist: gfwlistPath,
 		domains: domainsPath,
-		custom:  customPath,
 	}
 
 	if printHosts {
@@ -296,9 +267,6 @@ func main() {
 		log.Printf("domains source: %s (auto-reload enabled)", domainsPath)
 	} else {
 		log.Printf("domains source: %s (file not found, skipped)", domainsPath)
-	}
-	if customPath != "" {
-		log.Printf("custom source: %s", customPath)
 	}
 
 	log.Fatal(s.ListenAndServe())
