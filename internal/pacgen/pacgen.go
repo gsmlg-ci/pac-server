@@ -42,6 +42,15 @@ func ParseDomains(raw string) []string {
 			continue
 		}
 
+		// Support TLD/suffix entries like ".ai" — matches all domains under that TLD.
+		if strings.HasPrefix(line, ".") {
+			tld := strings.ToLower(strings.TrimLeft(line, "."))
+			if tld != "" && !strings.Contains(tld, ".") && isValidLabel(tld) {
+				set[tld] = struct{}{}
+				continue
+			}
+		}
+
 		for _, d := range domainPattern.FindAllString(line, -1) {
 			normalized, ok := normalizeDomain(d)
 			if ok {
@@ -79,7 +88,7 @@ func MergeDomainLists(lists ...[]string) []string {
 //   - gfwlistDomains: checked second (fallback)
 //
 // If customDomains is empty, the generated code only checks gfwlistDomains.
-func GeneratePAC(customDomains, gfwlistDomains []string, proxy string) string {
+func GeneratePAC(noProxyDomains, customDomains, gfwlistDomains []string, proxy string) string {
 	if proxy == "" {
 		proxy = DefaultProxy
 	}
@@ -87,12 +96,20 @@ func GeneratePAC(customDomains, gfwlistDomains []string, proxy string) string {
 	var b strings.Builder
 	// Pre-allocate: proxy string + fixed JS boilerplate ~150 bytes,
 	// plus ~18 bytes per domain per array.
-	total := 150 + len(customDomains)*18 + len(gfwlistDomains)*18
+	total := 150 + len(noProxyDomains)*18 + len(customDomains)*18 + len(gfwlistDomains)*18
 	b.Grow(total)
 
 	b.WriteString("var proxy = '")
 	b.WriteString(proxy)
 	b.WriteString("';\n")
+
+	if len(noProxyDomains) > 0 {
+		b.WriteString("var noProxyHosts = [\n")
+		for _, d := range noProxyDomains {
+			fmt.Fprintf(&b, "            %q,\n", d)
+		}
+		b.WriteString("];\n")
+	}
 
 	if len(customDomains) > 0 {
 		b.WriteString("var customHosts = [\n")
@@ -109,6 +126,15 @@ func GeneratePAC(customDomains, gfwlistDomains []string, proxy string) string {
 	b.WriteString("];\n\n")
 	b.WriteString("function FindProxyForURL(url, host) {\n")
 	b.WriteString("    var h = host.toLowerCase();\n")
+
+	if len(noProxyDomains) > 0 {
+		b.WriteString("    for (var i = 0; i < noProxyHosts.length; i++) {\n")
+		b.WriteString("        var d = noProxyHosts[i];\n")
+		b.WriteString("        if (h === d || h.endsWith('.' + d)) {\n")
+		b.WriteString("            return 'DIRECT';\n")
+		b.WriteString("        }\n")
+		b.WriteString("    }\n")
+	}
 
 	if len(customDomains) > 0 {
 		b.WriteString("    for (var i = 0; i < customHosts.length; i++) {\n")
@@ -129,6 +155,18 @@ func GeneratePAC(customDomains, gfwlistDomains []string, proxy string) string {
 	b.WriteString("}\n")
 
 	return b.String()
+}
+
+func isValidLabel(s string) bool {
+	if s == "" || strings.HasPrefix(s, "-") || strings.HasSuffix(s, "-") {
+		return false
+	}
+	for _, c := range s {
+		if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 func normalizeDomain(in string) (string, bool) {

@@ -21,10 +21,12 @@ var (
 	printHosts  bool
 	gfwlistPath string
 	domainsPath string
+	noproxyPath string
 )
 
 const defaultGFWListPath = "gfwlist.txt"
 const defaultDomainsPath = "domains.txt"
+const defaultNoproxyPath = "noproxy.txt"
 
 //go:embed gfwlist.txt
 var embeddedGFWList []byte
@@ -35,12 +37,14 @@ func init() {
 	flag.BoolVar(&printHosts, "p", false, "Print parsed hosts and exit.")
 	flag.StringVar(&gfwlistPath, "g", defaultGFWListPath, "Path to gfwlist.txt (base64 or plain text). If missing and default path is used, embedded gfwlist is used.")
 	flag.StringVar(&domainsPath, "d", defaultDomainsPath, "Path to extra domains file (one domain per line). Skipped if file does not exist.")
+	flag.StringVar(&noproxyPath, "n", defaultNoproxyPath, "Path to noproxy domains file (one domain per line). Matched domains always go DIRECT. Skipped if file does not exist.")
 }
 
 type pacService struct {
 	proxy   string
 	gfwlist string
 	domains string
+	noproxy string
 	mu      sync.RWMutex
 	cached  *cachedPAC
 }
@@ -64,6 +68,10 @@ func (s *pacService) loadPAC() ([]byte, error) {
 	}
 	s.mu.RUnlock()
 
+	noproxyDomains, err := s.loadDomainsFile(s.noproxy)
+	if err != nil {
+		return nil, err
+	}
 	customDomains, err := s.loadDomainsFile(s.domains)
 	if err != nil {
 		return nil, err
@@ -73,7 +81,7 @@ func (s *pacService) loadPAC() ([]byte, error) {
 		return nil, err
 	}
 
-	pac := []byte(pacgen.GeneratePAC(customDomains, gfwDomains, s.proxy))
+	pac := []byte(pacgen.GeneratePAC(noproxyDomains, customDomains, gfwDomains, s.proxy))
 
 	s.mu.Lock()
 	if s.cached == nil {
@@ -116,7 +124,16 @@ func (s *pacService) cacheKey() (string, error) {
 		}
 	}
 
-	return fmt.Sprintf("%s|%s", gfwKey, domainsKey), nil
+	noproxyKey, err := sourceCacheKey(s.noproxy, false)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			noproxyKey = ""
+		} else {
+			return "", err
+		}
+	}
+
+	return fmt.Sprintf("%s|%s|%s", gfwKey, domainsKey, noproxyKey), nil
 }
 
 func sourceCacheKey(path string, allowEmbeddedFallback bool) (string, error) {
@@ -150,6 +167,17 @@ func parseDomainsFromFile(path string, allowEmbeddedFallback bool) ([]string, er
 }
 
 func (s *pacService) showHosts() error {
+	if noproxyDomains, err := s.loadDomainsFile(s.noproxy); err != nil {
+		return err
+	} else if len(noproxyDomains) > 0 {
+		sort.Strings(noproxyDomains)
+		fmt.Println("# noproxy (DIRECT):")
+		for _, h := range noproxyDomains {
+			fmt.Println(h)
+		}
+		fmt.Println()
+	}
+
 	var domains []string
 
 	if customDomains, err := s.loadDomainsFile(s.domains); err != nil {
@@ -174,6 +202,7 @@ func (s *pacService) showHosts() error {
 	}
 
 	sort.Strings(unique)
+	fmt.Println("# proxy:")
 	for _, h := range unique {
 		fmt.Println(h)
 	}
@@ -195,9 +224,13 @@ func (s *pacService) handler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *pacService) watchDomains(done <-chan struct{}) {
-	prevModTime := int64(-1)
+	prevDomainsMod := int64(-1)
 	if st, err := os.Stat(s.domains); err == nil {
-		prevModTime = st.ModTime().UnixNano()
+		prevDomainsMod = st.ModTime().UnixNano()
+	}
+	prevNoproxyMod := int64(-1)
+	if st, err := os.Stat(s.noproxy); err == nil {
+		prevNoproxyMod = st.ModTime().UnixNano()
 	}
 
 	ticker := time.NewTicker(2 * time.Second)
@@ -208,17 +241,28 @@ func (s *pacService) watchDomains(done <-chan struct{}) {
 		case <-done:
 			return
 		case <-ticker.C:
-			st, err := os.Stat(s.domains)
-			if err != nil {
-				continue
+			changed := false
+
+			if st, err := os.Stat(s.domains); err == nil {
+				if mod := st.ModTime().UnixNano(); mod != prevDomainsMod {
+					prevDomainsMod = mod
+					changed = true
+					log.Printf("domains.txt changed, cache invalidated")
+				}
 			}
-			modTime := st.ModTime().UnixNano()
-			if modTime != prevModTime {
-				prevModTime = modTime
+
+			if st, err := os.Stat(s.noproxy); err == nil {
+				if mod := st.ModTime().UnixNano(); mod != prevNoproxyMod {
+					prevNoproxyMod = mod
+					changed = true
+					log.Printf("noproxy.txt changed, cache invalidated")
+				}
+			}
+
+			if changed {
 				s.mu.Lock()
 				s.cached = nil
 				s.mu.Unlock()
-				log.Printf("domains.txt changed, cache invalidated")
 			}
 		}
 	}
@@ -231,11 +275,16 @@ func main() {
 	if _, err := os.Stat(domainsPath); err != nil && errors.Is(err, os.ErrNotExist) {
 		domainsExist = false
 	}
+	noproxyExist := true
+	if _, err := os.Stat(noproxyPath); err != nil && errors.Is(err, os.ErrNotExist) {
+		noproxyExist = false
+	}
 
 	service := &pacService{
 		proxy:   proxyServer,
 		gfwlist: gfwlistPath,
 		domains: domainsPath,
+		noproxy: noproxyPath,
 	}
 
 	if printHosts {
@@ -267,6 +316,11 @@ func main() {
 		log.Printf("domains source: %s (auto-reload enabled)", domainsPath)
 	} else {
 		log.Printf("domains source: %s (file not found, skipped)", domainsPath)
+	}
+	if noproxyExist {
+		log.Printf("noproxy source: %s (auto-reload enabled)", noproxyPath)
+	} else {
+		log.Printf("noproxy source: %s (file not found, skipped)", noproxyPath)
 	}
 
 	log.Fatal(s.ListenAndServe())

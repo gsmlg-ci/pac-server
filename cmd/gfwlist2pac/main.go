@@ -36,7 +36,7 @@ func main() {
 		fail(errors.New("no domains parsed from gfwlist"))
 	}
 
-	pac := pacgen.GeneratePAC(nil, domains, *proxyFlag)
+	pac := pacgen.GeneratePAC(nil, nil, domains, *proxyFlag)
 	if err := os.WriteFile(*outFlag, []byte(pac), 0o644); err != nil {
 		fail(fmt.Errorf("write PAC file: %w", err))
 	}

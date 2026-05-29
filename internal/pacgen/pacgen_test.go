@@ -53,7 +53,7 @@ func TestMergeDomainLists(t *testing.T) {
 }
 
 func TestGeneratePAC(t *testing.T) {
-	pac := GeneratePAC(nil, []string{"example.com"}, "PROXY 127.0.0.1:3128")
+	pac := GeneratePAC(nil, nil, []string{"example.com"}, "PROXY 127.0.0.1:3128")
 
 	checks := []string{
 		"var proxy = 'PROXY 127.0.0.1:3128';",
@@ -73,7 +73,7 @@ func TestGeneratePACWithCustom(t *testing.T) {
 	custom := []string{"custom.example.com"}
 	gfwlist := []string{"gfwlist.example.com"}
 
-	pac := GeneratePAC(custom, gfwlist, "PROXY 127.0.0.1:3128")
+	pac := GeneratePAC(nil, custom, gfwlist, "PROXY 127.0.0.1:3128")
 
 	checks := []string{
 		"var customHosts = [",
@@ -93,5 +93,69 @@ func TestGeneratePACWithCustom(t *testing.T) {
 	gfwlistIdx := strings.Index(pac, "var hosts")
 	if customIdx > gfwlistIdx {
 		t.Fatal("customHosts should appear before hosts in generated PAC")
+	}
+}
+
+func TestParseDomainsTLD(t *testing.T) {
+	raw := strings.Join([]string{
+		".ai",
+		".dev",
+		"example.com",
+		".invalid!",
+		".-bad",
+	}, "\n")
+
+	domains := ParseDomains(raw)
+	got := strings.Join(domains, ",")
+	want := "ai,dev,example.com"
+	if got != want {
+		t.Fatalf("domains mismatch\nwant: %s\n got: %s", want, got)
+	}
+}
+
+func TestGeneratePACWithTLD(t *testing.T) {
+	// "ai" as a TLD entry should match any .ai domain
+	pac := GeneratePAC(nil, []string{"ai"}, nil, "PROXY 127.0.0.1:3128")
+
+	// The endsWith check: h.endsWith('.' + d) where d="ai" → h.endsWith('.ai')
+	if !strings.Contains(pac, `"ai"`) {
+		t.Fatal("generated PAC should contain the TLD entry \"ai\"")
+	}
+	if !strings.Contains(pac, "h.endsWith('.' + d)") {
+		t.Fatal("generated PAC should use endsWith matching")
+	}
+}
+
+func TestGeneratePACWithNoProxy(t *testing.T) {
+	noproxy := []string{"internal.example.com"}
+	gfwlist := []string{"example.com"}
+
+	pac := GeneratePAC(noproxy, nil, gfwlist, "PROXY 127.0.0.1:3128")
+
+	checks := []string{
+		"var noProxyHosts = [",
+		"\"internal.example.com\",",
+		"return 'DIRECT';",
+		"\"example.com\",",
+	}
+
+	for _, c := range checks {
+		if !strings.Contains(pac, c) {
+			t.Fatalf("generated PAC missing expected content: %q", c)
+		}
+	}
+
+	// noProxyHosts should appear before hosts in the generated PAC.
+	noproxyIdx := strings.Index(pac, "noProxyHosts")
+	hostsIdx := strings.Index(pac, "var hosts")
+	if noproxyIdx > hostsIdx {
+		t.Fatal("noProxyHosts should appear before hosts in generated PAC")
+	}
+
+	// The DIRECT return for noproxy should come before the proxy return.
+	directIdx := strings.Index(pac, "return 'DIRECT';")
+	proxyIdx := strings.Index(pac, "return proxy;")
+	if directIdx > proxyIdx {
+		t.Fatal("noproxy DIRECT return should appear before proxy return")
 	}
 }
